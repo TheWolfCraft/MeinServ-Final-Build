@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>MeinServ</title>
+<style>
+body {
+  margin:0;
+  font-family:sans-serif;
+  background:#0d1117;
+  color:white;
+  display:flex;
+  flex-direction:column;
+  height:100vh;
+}
+header {
+  padding:15px;
+  text-align:center;
+  background:linear-gradient(90deg,#0b1f3a,#1e4fd1);
+}
+#messages {
+  flex:1;
+  overflow-y:auto;
+  padding:10px;
+}
+.message {
+  padding:10px;
+  margin:6px 0;
+  border-radius:10px;
+  max-width:70%;
+  position:relative;
+}
+.me { background:#2ea043; margin-left:auto; }
+.other { background:#30363d; }
+.reply-box {
+  font-size:12px;
+  border-left:3px solid #1e4fd1;
+  padding-left:5px;
+  margin-bottom:5px;
+  cursor:pointer;
+  opacity:0.8;
+}
+.reactions span {
+  margin-right:5px;
+  cursor:pointer;
+}
+.emoji-menu {
+  position:absolute;
+  bottom:35px;
+  right:5px;
+  background:#222;
+  padding:5px;
+  border-radius:10px;
+  display:flex;
+  gap:5px;
+}
+#typing {
+  font-size:12px;
+  color:gray;
+  padding:5px 10px;
+}
+#replyPreview {
+  display:none;
+  background:#222;
+  padding:5px;
+  position:relative;
+}
+#replyPreview button {
+  position:absolute;
+  right:5px;
+  top:5px;
+}
+#form {
+  display:flex;
+  width:100%;
+  padding:10px;
+  gap:10px;
+  background:#161b22;
+  box-sizing:border-box;
+}
+#input {
+  flex:1;
+  padding:12px;
+  border-radius:10px;
+  border:none;
+  font-size:16px;
+}
+button {
+  padding:12px;
+  border:none;
+  border-radius:10px;
+  background:#1e4fd1;
+  color:white;
+  cursor:pointer;
+}
+</style>
+</head>
+<body>
+<header>MeinServ</header>
+<div id="messages"></div>
+<div id="typing"></div>
+<div id="replyPreview">
+  <span id="replyText"></span>
+  <button onclick="cancelReply()">❌</button>
+</div>
+<form id="form">
+  <input id="input" placeholder="Nachricht...">
+  <input type="file" id="file">
+  <button>Senden</button>
+</form>
+
+<script type="module">
+import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
+
+const supabaseUrl = "https://bacxknbwkvkbydaoxlcc.supabase.co";
+const supabaseKey = "sb_publishable_suFA4CjhlsZwnFrScJMaZQ_3s4-hOd6";
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+let username = localStorage.getItem("username") || prompt("Name?");
+localStorage.setItem("username", username);
+
+/* Farben */
+const colors=["#ff6b6b","#6bcBff","#ffd93d","#6bff95","#c77dff","#ff9f1c","#00c2a8"];
+const userColors={};
+function getColor(name){
+  if(!userColors[name]){
+    userColors[name]=colors[Object.keys(userColors).length%colors.length];
+  }
+  return userColors[name];
+}
+
+const messagesDiv=document.getElementById("messages");
+const typingDiv=document.getElementById("typing");
+const replyPreview=document.getElementById("replyPreview");
+const replyText=document.getElementById("replyText");
+const input = document.getElementById("input");
+const fileInput = document.getElementById("file");
+
+const messageData={};
+let replyTo=null;
+
+/* RENDER */
+function render(msg,key){
+  const el = messageData[key].el;
+  let html="";
+  if(msg.replyTo && messageData[msg.replyTo]){
+    const o = messageData[msg.replyTo].data;
+    html+=`<div class="reply-box" onclick="scrollToMsg('${msg.replyTo}')">
+      Antwort auf <b style="color:${getColor(o.username)}">${o.username}</b>: 
+      ${o.text||"[Bild]"}
+    </div>`;
+  }
+  html+=`<b style="color:${getColor(msg.username)}">${msg.username}</b><br>`;
+  if(msg.text) html+=msg.text;
+  if(msg.image) html+=`<br><img src="${msg.image}" width="150">`;
+  if(msg.reactions){
+    const counts={};
+    Object.values(msg.reactions).forEach(e=>counts[e]=(counts[e]||0)+1);
+    html+=`<div class="reactions">`+
+      Object.entries(counts).map(([e,c])=>`<span onclick="react('${key}','${e}')">${e} ${c}</span>`).join("")+
+      `</div>`;
+  }
+  if(msg.seenBy && Object.keys(msg.seenBy).length>=2){
+    html+=`<div style="font-size:10px;color:gray;">✓✓ Gelesen</div>`;
+  }
+  html+=`
+  <div>
+    <button onclick="emoji('${key}',this)">😊</button>
+    <button onclick="reply('${key}')">↩️</button>
+    ${msg.username===username?`
+      <button onclick="edit('${key}')">✏️</button>
+      <button onclick="del('${key}')">🗑️</button>`:""}
+  </div>`;
+  el.innerHTML=html;
+}
+
+/* Scroll zu Nachricht */
+window.scrollToMsg = key=>{
+  messageData[key]?.el.scrollIntoView({behavior:"smooth"});
+};
+
+/* ADD */
+supabase.from('messages').on('INSERT', payload=>{
+  const key = payload.new.id;
+  const data = payload.new;
+  const el = document.createElement("div");
+  el.className="message "+(data.username===username?"me":"other");
+  messagesDiv.appendChild(el);
+  messageData[key]={data,el};
+  render(data,key);
+}).subscribe();
+
+/* SEND */
+document.getElementById("form").onsubmit=e=>{
+  e.preventDefault();
+  if(!input.value && !fileInput.files[0]) return;
+  if(fileInput.files[0]){
+    const r = new FileReader();
+    r.onload = ()=>{
+      supabase.from('messages').insert([{
+        username,
+        image:r.result,
+        replyTo,
+        time:new Date().toISOString()
+      }]);
+    };
+    r.readAsDataURL(fileInput.files[0]);
+  } else {
+    supabase.from('messages').insert([{
+      username,
+      text: input.value,
+      replyTo,
+      time:new Date().toISOString()
+    }]);
+  }
+  input.value="";
+  fileInput.value="";
+  cancelReply();
+  stopTyping();
+};
+
+/* REPLY */
+window.reply = key=>{
+  replyTo=key;
+  replyPreview.style.display="block";
+  replyText.textContent="Antwort...";
+};
+window.cancelReply=()=>{
+  replyTo=null;
+  replyPreview.style.display="none";
+};
+
+/* EDIT */
+window.edit = key=>{
+  const t=prompt("Neu:");
+  if(t) supabase.from('messages').update({text:t}).eq('id',key);
+};
+/* DELETE */
+window.del = key=>{
+  if(confirm("Löschen?")) supabase.from('messages').delete().eq('id',key);
+};
+/* REACT */
+window.react=(key,emoji)=>{
+  supabase.from('messages').select('*').eq('id',key).then(res=>{
+    const msg=res.data[0];
+    const reactions = msg.reactions || {};
+    if(reactions[username]===emoji) delete reactions[username];
+    else reactions[username]=emoji;
+    supabase.from('messages').update({reactions}).eq('id',key);
+  });
+};
+/* EMOJI MENU */
+window.emoji=(key,btn)=>{
+  const menu=document.createElement("div");
+  menu.className="emoji-menu";
+  ["😀","😂","😎","😢","👍","❤️","🔥"].forEach(e=>{
+    const s=document.createElement("span");
+    s.textContent=e;
+    s.onclick=()=>{react(key,e);menu.remove();};
+    menu.appendChild(s);
+  });
+  btn.parentElement.appendChild(menu);
+};
+
+/* TYPING */
+let timeout;
+input.oninput=()=>{
+  supabase.from('typing').upsert({username,typing:true});
+  clearTimeout(timeout);
+  timeout=setTimeout(stopTyping,2000);
+};
+function stopTyping(){
+  supabase.from('typing').upsert({username,typing:false});
+}
+supabase.from('typing').on('UPDATE', payload=>{
+  const data = payload.new;
+  if(data.username!==username && data.typing){
+    typingDiv.textContent = data.username+" schreibt...";
+  } else {
+    typingDiv.textContent = "";
+  }
+}).subscribe();
+</script>
+</body>
+</html> 
